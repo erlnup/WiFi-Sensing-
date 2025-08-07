@@ -1,12 +1,15 @@
 import asyncio
 import glob
-
+import os
 from numpy._core.multiarray import add_docstring 
 import scipy.io as sio
 import numpy as np
 import seaborn as sns 
 import matplotlib.pyplot as plt
+import time
 from utils.hampel_filter import hampel_filter
+import torch
+
 NTU_FI = '.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID'
 
 
@@ -33,9 +36,9 @@ test_amp:
 
 full_path = '/Users/erlnup/.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID/test_amp/001/a0.mat'
 
-files = glob.glob("/Users/erlnup/.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID/test_amp/001/a*.mat")
+files = glob.glob("/Users/erlingnupen/.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID/test_amp/001/a*.mat")
 
-mat = sio.loadmat('/Users/erlnup/.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID/test_amp/001/a1.mat')
+mat = sio.loadmat('/Users/erlingnupen/.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID/test_amp/001/a1.mat')
 
 # Person ID: 001, session a:
 print(f"mat file keys: {mat.keys()}")
@@ -55,75 +58,88 @@ async def filter_csi_matrix(csi_matrix: np.ndarray):
     filtered_rows = await asyncio.gather(*tasks)
     return np.array(filtered_rows)
 
-async def add_gaussian_noise(csi_matrix, sigma: float = 0.02):
-    noise = np.random.normal(loc=0.0, scale=sigma, size=csi_matrix.shape)
+async def add_gaussian_noise(entry, sigma: float = 0.02):
+    return entry + np.random.normal(loc=0.0, scale=sigma)
+
+async def scale(entry):
+    return entry * np.random.uniform(low=0.9, high=1.1)
+
+
+async def time_shift(subcarrier: np.ndarray, int_pos, chunk_size: int = 100, shift_range: int = 5):
+    """
+    Applies time shift augmentation to a window (chunk) of the subcarrier array.
+    Pads with mean if window is at the end.
+    """
+    chunk = subcarrier[int_pos:int_pos + chunk_size]
+
+    if len(chunk) < chunk_size:
+        # Handle empty chunk case for mean calculation
+        mean_val = np.mean(chunk) if len(chunk) > 0 else 0
+        try:
+            chunk = np.pad(chunk, (0, chunk_size - len(chunk)), constant_values=mean_val)
+        except Exception as e:
+            print(f"Padding failed in time shift augmentation, index: {int_pos} Exception: {e}")
+            chunk = np.pad(chunk, (0, chunk_size - len(chunk)), constant_values=0)
+
+    t_prime = np.random.randint(-shift_range, shift_range + 1)
+    mean_val = np.mean(chunk)
+    shifted_chunk = np.full_like(chunk, fill_value=mean_val)
+
+    if t_prime > 0:
+        shifted_chunk[t_prime:] = chunk[:-t_prime]
+    elif t_prime < 0:
+        shifted_chunk[:t_prime] = chunk[-t_prime:]
+    else:
+        shifted_chunk = chunk.copy()
+
+    augmented_subcarrier = subcarrier.copy()
+    augmented_subcarrier[int_pos:int_pos + chunk_size] = shifted_chunk
+
     
-    mask = np.zeros(csi_matrix.size, dtype=bool)
-    num_noisy = int(csi_matrix.size * 0.9)
-    mask[:num_noisy] = True
-    np.random.shuffle(mask)
-    
-    noise_mask = mask.reshape(csi_matrix.shape)
-    
-    noisy_matrix = csi_matrix.copy()
-    noisy_matrix[noise_mask] += noise[noise_mask]
-    
-    return noisy_matrix
 
-async def scale_amplitude(csi_matrix):
-    scale_factors = np.random.uniform(low=0.9, high=1.1, size=csi_matrix.shape)
-    return csi_matrix * scale_factors
-
-async def time_shift(matrix: np.ndarray, chunk_size: int = 100, shift_range: int = 5):
-    shifted_matrix = []
-
-    for subcarrier in matrix:  # each row
-        shifted_subcarrier = []
-
-        for i in range(0, len(subcarrier), chunk_size):
-            chunk = subcarrier[i:i + chunk_size]
-
-            if len(chunk) < chunk_size:
-                chunk = np.pad(chunk, (0, chunk_size - len(chunk)), constant_values=np.mean(chunk))
-
-            t_prime = np.random.randint(-shift_range, shift_range + 1)
-            mean_val = np.mean(chunk)
-            shifted_chunk = np.full_like(chunk, fill_value=mean_val)
-
-            if t_prime > 0:
-                shifted_chunk[t_prime:] = chunk[:-t_prime]
-            elif t_prime < 0:
-                shifted_chunk[:t_prime] = chunk[-t_prime:]
-            else:
-                shifted_chunk = chunk.copy()
-
-            shifted_subcarrier.append(shifted_chunk)
-
-        full_shifted = np.concatenate(shifted_subcarrier)
-        shifted_matrix.append(full_shifted)
-
-    return np.array(shifted_matrix)
+    return augmented_subcarrier
 
 async def apply_random_augmentation(csi_matrix):
 
-#generate a random mask that where each entry has 90 % of being true:
-mask = np.random.rand(*filtered_array.shape) < 0.9
+    augmentations = [add_gaussian_noise, scale, time_shift]
+    augmented_matrix = csi_matrix.copy()
+    n_rows, n_cols = augmented_matrix.shape
 
-# time shifting has to be done in batches
+    for i in range(n_rows):
+        j = 0
+        while j < n_cols:
+            if np.random.rand() < 0.9:
+                augment = np.random.choice(augmentations)
+                if augment is time_shift:
+                    augmented_matrix[i, :] = await augment(augmented_matrix[i, :], j)
+                    break
+                else:
+                    augmented_matrix[i, j] = await augment(augmented_matrix[i, j])
+            j += 1
+
+    return augmented_matrix
 
 
-# MODIFIED: Combined plotting function for comparison
-async def plot_augmented_matrix(csi_matrix):
-    # Apply augmentations
-    add_noise = await add_gaussian_noise(csi_matrix)
-    scale_amps = await scale_amplitude(add_noise)
-    time_shifted = await time_shift(scale_amps)
-    filtered_array = await filter_csi_matrix(time_shifted)
+
+
+
+
+async def plot_augmented_matrix(csi_matrix, person):
+
+    t_0 = time.time()
+
+    filtered_array = await filter_csi_matrix(csi_matrix)
+    augmented_array = await apply_random_augmentation(filtered_array)
+    t_1 = time.time()
+
+    t_diff = t_1 - t_0
+
+    print(f"Filtering the array took: {t_diff} seconds")
     
-    # Create figure with two subplots side by side
+    os.makedirs('visualizations', exist_ok=True)
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
-    
-    # Left plot: Original data
+
     sns.heatmap(csi_matrix,
                 cmap='viridis',
                 cbar_kws={'label': '|H| amplitude'},
@@ -133,9 +149,8 @@ async def plot_augmented_matrix(csi_matrix):
     ax1.set_xlabel('Packet index')
     ax1.set_ylabel('Link × Sub-carrier index')
     ax1.set_title('Original CSI Amplitude Heat-map')
-    
-    # Right plot: Augmented data
-    sns.heatmap(filtered_array,
+
+    sns.heatmap(augmented_array,
                 cmap='viridis',
                 cbar_kws={'label': '|H| amplitude'},
                 xticklabels=False,
@@ -144,12 +159,54 @@ async def plot_augmented_matrix(csi_matrix):
     ax2.set_xlabel('Packet index')
     ax2.set_ylabel('Link × Sub-carrier index')
     ax2.set_title('Augmented CSI Amplitude Heat-map')
-    
-    plt.tight_layout()
-    plt.show()
 
-# Run the comparison
-asyncio.run(plot_augmented_matrix(csi_amps))
+    plt.tight_layout()
+
+    plt.savefig(f'visualizations/csi_comparison_{person}.png', dpi=300, bbox_inches='tight')
+    #plt.savefig('visualizations/csi_comparison.pdf', bbox_inches='tight')  # Optional: also save as PDF
+    plt.close()  # Close the figure to free memory
+
+    print("Figure saved to visualizations/csi_comparison.png")
+
+
+a_files = glob.glob("/Users/erlingnupen/.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID/test_amp/001/a*.mat")
+
+"""
+for a_file in a_files:
+
+    mat = sio.loadmat(a_file)
+
+    print(f"mat file keys: {mat.keys()}")
+    csi_amps = mat['CSIamp']
+
+    person = os.path.basename(a_file)
+"""
+
+
+async def prepare_data():
+
+    a_file = a_files[0]
+    data = sio.loadmat(a_file)
+    print(f"Loading file")
+
+    csi_amps = data['CSIamp']
+
+    print(f"File loaded")
+
+    t_0 = time.time()
+    print(f"Filtering array")
+    filtered_array = await filter_csi_matrix(csi_amps)
+    augmented_array = await apply_random_augmentation(filtered_array)
+    t_1 = time.time()
+
+    t_diff = t_1 - t_0
+    print(f"Array filtered, augmentation took: {t_diff} seconds")
+
+    matrix = augmented_array.reshape(342, 2000, 1)
+    matrix = torch.from_numpy(matrix).float()
+
+    return matrix, matrix.shape[2]
+
 
 
 
