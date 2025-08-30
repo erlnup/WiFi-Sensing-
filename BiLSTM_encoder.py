@@ -11,4 +11,7 @@ class BiLSTMEncoder(nn.Module):
     def forward(self, x):
         outputs, (h_n, c_n) = self.BiLSTM(x)
 
-        return h_n[-1]
+        h_forward = h_n[-2]
+        h_backward = h_n[-1]
+        h = torch.cat((h_forward, h_backward), dim=-1)
+        return h

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import time
 from utils.hampel_filter import hampel_filter
 import torch
+from torch.utils.data import Sampler,BatchSampler,Dataset,DataLoader,TensorDataset
 
 NTU_FI = '.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID'
 
@@ -41,14 +42,7 @@ files = glob.glob("/Users/erlingnupen/.cache/kagglehub/datasets/hylanj/wifi-csi-
 mat = sio.loadmat('/Users/erlingnupen/.cache/kagglehub/datasets/hylanj/wifi-csi-dataset-ntu-fi-humanid/versions/1/NTU-Fi-HumanID/test_amp/001/a1.mat')
 
 # Person ID: 001, session a:
-print(f"mat file keys: {mat.keys()}")
 csi_amps = mat['CSIamp']
-
-print(f' Type {type(csi_amps)}')
-print(f' Shape CSIamp: {np.shape(csi_amps)}')
-print(f' First element {csi_amps[0]}')
-print(f'First element Type {type(csi_amps[0])}')
-print(f'test {csi_amps[0][0]}')
 
 filter_csi_amps = np.empty_like(csi_amps)
 
@@ -207,6 +201,23 @@ async def prepare_data():
 
     return matrix, matrix.shape[2]
 
+
+
+
+
+async def custom_batch_selector(sample):
+    return list(BatchSampler(sample))
+
+
+
+async def bq_bg_samples():
+    
+    matrix, input_size = await prepare_data()
+
+    tensor_dataset = TensorDataset(matrix)
+
+
+    load_data = DataLoader(dataset=tensor_dataset, batch_size=30)
 
 
 
